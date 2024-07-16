@@ -2,7 +2,6 @@ package sdkv2provider
 
 import (
 	"fmt"
-
 	"github.com/cloudflare/cloudflare-go"
 	"github.com/cloudflare/terraform-provider-cloudflare/internal/consts"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
@@ -106,6 +105,11 @@ var teamsRuleSettings = map[string]*schema.Schema{
 		Optional:    true,
 		Description: "Turns on IP category based filter on dns if the rule contains dns category checks.",
 	},
+	"ignore_cname_category_matches": {
+		Type:        schema.TypeBool,
+		Optional:    true,
+		Description: "Set to true, to ignore the category matches at CNAME domains in a response.",
+	},
 	"allow_child_bypass": {
 		Type:        schema.TypeBool,
 		Optional:    true,
@@ -124,6 +128,15 @@ var teamsRuleSettings = map[string]*schema.Schema{
 			Schema: teamsAuditSSHSettings,
 		},
 		Description: "Settings for auditing SSH usage.",
+	},
+	"dns_resolvers": {
+		Type:     schema.TypeList,
+		MaxItems: 1,
+		Optional: true,
+		Elem: &schema.Resource{
+			Schema: teamsCustomDNSResolverSettings,
+		},
+		Description: "DNS Custom Resolver settings",
 	},
 	"l4override": {
 		Type:     schema.TypeList,
@@ -269,6 +282,74 @@ var teamsL4OverrideSettings = map[string]*schema.Schema{
 	},
 }
 
+var customResolverElem = &schema.Schema{
+	Type: schema.TypeMap,
+	Elem: &schema.Schema{
+		Type: schema.TypeString,
+	},
+	ValidateFunc: func(val interface{}, key string) (warns []string, errs []error) {
+		resolverElemValidators := customResolverElemValidators()
+		resolverFields, ok := val.(map[string]interface{})
+		if !ok {
+			errs = append(errs, fmt.Errorf("got invalid map for rule element"))
+			return
+		}
+
+		for k, v := range resolverFields {
+			if _, ok := resolverElemValidators[k]; !ok {
+				errs = append(errs, fmt.Errorf("%s is not supported in a response header", k))
+			}
+
+			validationFunc := resolverElemValidators[k]
+			delete(resolverElemValidators, k)
+			if validationFunc == nil {
+				continue
+			}
+
+			w, e := validationFunc(v, k)
+			warns = append(warns, w...)
+			errs = append(errs, e...)
+		}
+
+		// attributes with non-nil validators must be set
+		for k, v := range resolverElemValidators {
+			if v == nil {
+				continue
+			}
+			errs = append(errs, fmt.Errorf("%s must be set in a response header", k))
+		}
+
+		return
+	},
+}
+
+func customResolverElemValidators() map[string]schema.SchemaValidateFunc {
+	v := make(map[string]schema.SchemaValidateFunc)
+
+	v["ip"] = validation.StringIsNotEmpty
+	v["port"] = validation.StringIsNotEmpty
+	v["vnet_id"] = validation.StringLenBetween(0, 37) //uuid
+	v["route_through_private_network"] = BoolOptionalString()
+	return v
+}
+
+var teamsCustomDNSResolverSettings = map[string]*schema.Schema{
+	"ipv4": {
+		Type:        schema.TypeList,
+		MaxItems:    10,
+		Optional:    true,
+		Elem:        customResolverElem,
+		Description: "IPv4s to forward traffic to.",
+	},
+	"ipv6": {
+		Type:        schema.TypeList,
+		MaxItems:    10,
+		Optional:    true,
+		Elem:        customResolverElem,
+		Description: "IPv6s  to forward traffic to.",
+	},
+}
+
 var teamsAuditSSHSettings = map[string]*schema.Schema{
 	"command_logging": {
 		Type:        schema.TypeBool,
@@ -316,4 +397,16 @@ var teamsCheckSessionSettings = map[string]*schema.Schema{
 		Required:    true,
 		Description: "Configure how fresh the session needs to be to be considered valid.",
 	},
+}
+
+func BoolOptionalString() schema.SchemaValidateFunc {
+	return func(i interface{}, k string) (warnings []string, errors []error) {
+		_, ok := i.(string)
+		if !ok {
+			errors = append(errors, fmt.Errorf("expected type of %s to be string", k))
+			return warnings, errors
+		}
+
+		return warnings, errors
+	}
 }

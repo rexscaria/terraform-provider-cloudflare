@@ -125,7 +125,6 @@ func dataSourceCloudflareRecordRead(ctx context.Context, d *schema.ResourceData,
 	d.Set("proxied", record.Proxied)
 	d.Set("ttl", record.TTL)
 	d.Set("proxiable", record.Proxiable)
-	d.Set("locked", record.Locked)
 	d.Set("zone_name", record.ZoneName)
 
 	if record.Priority != nil {

@@ -3,7 +3,9 @@ package sdkv2provider
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -214,7 +216,13 @@ func flattenTeamsRuleSettings(d *schema.ResourceData, settings *cloudflare.Teams
 		settings.AllowChildBypass == nil &&
 		settings.BypassParentRule == nil &&
 		settings.AuditSSH == nil &&
-		settings.NotificationSettings == nil {
+		settings.NotificationSettings == nil &&
+		settings.AllowChildBypass == nil &&
+		settings.BypassParentRule == nil &&
+		settings.IgnoreCNAMECategoryMatches == nil &&
+		settings.ResolveDnsThroughCloudflare == nil &&
+		settings.AuditSSH == nil &&
+		settings.DnsResolverSettings == nil {
 		return nil
 	}
 
@@ -238,6 +246,14 @@ func flattenTeamsRuleSettings(d *schema.ResourceData, settings *cloudflare.Teams
 		result["ip_categories"] = true
 	}
 
+	if settings.IgnoreCNAMECategoryMatches != nil {
+		result["ignore_cname_category_matches"] = *settings.IgnoreCNAMECategoryMatches
+	}
+
+	if settings.ResolveDnsThroughCloudflare != nil {
+		result["resolve_dns_through_cloudflare"] = *settings.ResolveDnsThroughCloudflare
+	}
+
 	if settings.AllowChildBypass != nil {
 		result["allow_child_bypass"] = *settings.AllowChildBypass
 	}
@@ -250,6 +266,10 @@ func flattenTeamsRuleSettings(d *schema.ResourceData, settings *cloudflare.Teams
 		result["audit_ssh"] = flattenTeamsAuditSSHSettings(settings.AuditSSH)
 	}
 
+	if settings.DnsResolverSettings != nil {
+		result["dns_resolvers"] = flattenTeamsResolverSettings(settings.DnsResolverSettings)
+	}
+
 	return []interface{}{result}
 }
 
@@ -259,7 +279,7 @@ func inflateTeamsRuleSettings(settings interface{}) *cloudflare.TeamsRuleSetting
 		return nil
 	}
 	settingsMap := settingsList[0].(map[string]interface{})
-	enabled := settingsMap["block_page_enabled"].(bool)
+	enabled := readOptionalBooleanSettings(settingsMap, "block_page_enabled")
 	reason := settingsMap["block_page_reason"].(string)
 
 	var overrideIPs []string
@@ -274,13 +294,20 @@ func inflateTeamsRuleSettings(settings interface{}) *cloudflare.TeamsRuleSetting
 
 	checkSessionSettings := inflateTeamsCheckSessionSettings(settingsMap["check_session"].([]interface{}))
 	addHeaders := inflateTeamsAddHeaders(settingsMap["add_headers"].(map[string]interface{}))
-	insecureDisableDNSSECValidation := settingsMap["insecure_disable_dnssec_validation"].(bool)
+	insecureDisableDNSSECValidation := readOptionalBooleanSettings(settingsMap, "insecure_disable_dnssec_validation")
 	egressSettings := inflateTeamsEgressSettings(settingsMap["egress"].([]interface{}))
 	payloadLog := inflateTeamsDlpPayloadLogSettings(settingsMap["payload_log"].([]interface{}))
 	untrustedCertSettings := inflateTeamsUntrustedCertSettings(settingsMap["untrusted_cert"].([]interface{}))
 	notificationSettings := inflateTeamsNotificationSettings(settingsMap["notification_settings"].([]interface{}))
+	ignoreCNAMECategoryMatches := readOptionalBooleanSettings(settingsMap, "ignore_cname_category_matches")
+	allowChildBypass := readOptionalBooleanSettings(settingsMap, "allow_child_bypass")
+	bypassParentRule := readOptionalBooleanSettings(settingsMap, "bypass_parent_rule")
+	resolveDnsThroughCloudflare := readOptionalBooleanSettings(settingsMap, "resolve_dns_through_cloudflare")
+	auditSSHSettings := inflateTeamsAuditSSHSettings(settingsMap["audit_ssh"].([]interface{}))
+	dnsResolverSettings := inflateTeamsCustomResolverSettings(settingsMap["dns_resolvers"].([]interface{}))
+	ipCategories := readOptionalBooleanSettings(settingsMap, "ip_categories")
 
-	return &cloudflare.TeamsRuleSettings{
+	result := cloudflare.TeamsRuleSettings{
 		BlockPageEnabled:                enabled,
 		BlockReason:                     reason,
 		OverrideIPs:                     overrideIPs,
@@ -294,7 +321,29 @@ func inflateTeamsRuleSettings(settings interface{}) *cloudflare.TeamsRuleSetting
 		PayloadLog:                      payloadLog,
 		UntrustedCertSettings:           untrustedCertSettings,
 		NotificationSettings:            notificationSettings,
+		IgnoreCNAMECategoryMatches:      &ignoreCNAMECategoryMatches,
+		ResolveDnsThroughCloudflare:     &resolveDnsThroughCloudflare,
+		DnsResolverSettings:             dnsResolverSettings,
+		IPCategories:                    ipCategories,
+		AuditSSH:                        auditSSHSettings,
 	}
+	// set optional settings if present, so api won't complain
+	if allowChildBypass {
+		result.AllowChildBypass = &allowChildBypass
+	}
+	if bypassParentRule {
+		result.BypassParentRule = &bypassParentRule
+	}
+
+	return &result
+}
+
+func readOptionalBooleanSettings(settingsMap map[string]any, name string) bool {
+	val, ok := settingsMap[name]
+	if !ok {
+		return false
+	}
+	return val.(bool)
 }
 
 func flattenTeamsRuleBisoAdminControls(settings *cloudflare.TeamsBISOAdminControlSettings) []interface{} {
@@ -425,6 +474,38 @@ func flattenTeamsAuditSSHSettings(settings *cloudflare.AuditSSHRuleSettings) []i
 	}}
 }
 
+func flattenTeamsResolverSettings(settings *cloudflare.TeamsDnsResolverSettings) []interface{} {
+	if settings == nil {
+		return nil
+	}
+
+	ipv4s := make([]map[string]interface{}, 0, len(settings.V4Resolvers))
+	ipv6s := make([]map[string]interface{}, 0, len(settings.V6Resolvers))
+
+	for _, v4 := range settings.V4Resolvers {
+		ipv4s = append(ipv4s, map[string]any{
+			"ip":                            v4.IP,
+			"port":                          stringFromIntPtr(v4.Port),
+			"vnet_id":                       v4.VnetID,
+			"route_through_private_network": stringFromBoolPtr(v4.RouteThroughPrivateNetwork),
+		})
+	}
+
+	for _, v6 := range settings.V6Resolvers {
+		ipv6s = append(ipv6s, map[string]any{
+			"ip":                            v6.IP,
+			"port":                          stringFromIntPtr(v6.Port), // convert everything to string while flattening
+			"vnet_id":                       v6.VnetID,
+			"route_through_private_network": stringFromBoolPtr(v6.RouteThroughPrivateNetwork),
+		})
+	}
+
+	return []interface{}{map[string]interface{}{
+		"ipv4": ipv4s,
+		"ipv6": ipv6s,
+	}}
+}
+
 func flattenTeamsEgressSettings(settings *cloudflare.EgressSettings) []interface{} {
 	if settings == nil {
 		return nil
@@ -450,6 +531,71 @@ func inflateTeamsEgressSettings(settings interface{}) *cloudflare.EgressSettings
 		Ipv6Range:    ipv6,
 		Ipv4Fallback: ipv4Fallback,
 	}
+}
+
+func inflateTeamsAuditSSHSettings(settings interface{}) *cloudflare.AuditSSHRuleSettings {
+	settingsList := settings.([]interface{})
+	if len(settingsList) != 1 {
+		return nil
+	}
+	settingsMap := settingsList[0].(map[string]interface{})
+	logging := settingsMap["command_logging"].(bool)
+	return &cloudflare.AuditSSHRuleSettings{
+		CommandLogging: logging,
+	}
+}
+
+func inflateTeamsCustomResolverSettings(settings interface{}) *cloudflare.TeamsDnsResolverSettings {
+	settingsList := settings.([]interface{})
+	if len(settingsList) != 1 {
+		return nil
+	}
+	settingsMap := settingsList[0].(map[string]interface{})
+	var ipv4s []cloudflare.TeamsDnsResolverAddressV4
+	var ipv6s []cloudflare.TeamsDnsResolverAddressV6
+
+	if ipv4, ok := settingsMap["ipv4"]; ok {
+		for _, s := range ipv4.([]interface{}) {
+			ipv4s = append(ipv4s, cloudflare.TeamsDnsResolverAddressV4{
+				TeamsDnsResolverAddress: inflateTeamsDnsResolverAddress(s.(map[string]any)),
+			})
+		}
+	}
+
+	if ipv6, ok := settingsMap["ipv6"]; ok {
+		for _, s := range ipv6.([]interface{}) {
+			ipv6s = append(ipv6s, cloudflare.TeamsDnsResolverAddressV6{
+				TeamsDnsResolverAddress: inflateTeamsDnsResolverAddress(s.(map[string]any)),
+			})
+		}
+	}
+
+	return &cloudflare.TeamsDnsResolverSettings{
+		V4Resolvers: ipv4s,
+		V6Resolvers: ipv6s,
+	}
+}
+
+func inflateTeamsDnsResolverAddress(s map[string]any) cloudflare.TeamsDnsResolverAddress {
+	result := cloudflare.TeamsDnsResolverAddress{}
+	if ip, ok := s["ip"]; ok {
+		result.IP = ip.(string)
+	}
+	if port, ok := s["port"]; ok {
+		portInt, err := strconv.Atoi(port.(string))
+		if err != nil {
+			log.Fatalf("failed to convert gateway dns port `%s`", port)
+		}
+		result.Port = &portInt
+	}
+	if vnet, ok := s["vnet_id"]; ok {
+		result.VnetID = vnet.(string)
+	}
+	if r, ok := s["route_through_private_network"]; ok {
+		b := boolFromRawString(r.(string))
+		result.RouteThroughPrivateNetwork = &b
+	}
+	return result
 }
 
 func flattenTeamsDlpPayloadLogSettings(settings *cloudflare.TeamsDlpPayloadLogSettings) []interface{} {

@@ -130,6 +130,32 @@ func boolFromString(status string) bool {
 	return false
 }
 
+func boolFromRawString(boolStr string) bool {
+	switch strings.ToLower(boolStr) {
+	case "true":
+		return true
+	}
+	return false
+}
+
+func stringFromIntPtr(intPtr *int) string {
+	if intPtr == nil {
+		return ""
+	}
+	return fmt.Sprintf("%d", *intPtr)
+}
+
+func stringFromBoolPtr(boolPtr *bool) string {
+	if boolPtr == nil {
+		return "false"
+	}
+
+	if *boolPtr {
+		return "true"
+	}
+	return "false"
+}
+
 func stringFromBool(status bool) string {
 	if status {
 		return "on"
